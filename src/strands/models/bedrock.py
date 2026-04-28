@@ -30,6 +30,7 @@ from ..types.exceptions import (
 )
 from ..types.streaming import CitationsDelta, StreamEvent
 from ..types.tools import ToolChoice, ToolSpec
+from ._strict_schema import ensure_strict_json_schema
 from ._validation import validate_config_keys
 from .model import BaseModelConfig, CacheConfig, Model
 
@@ -260,7 +261,11 @@ class BedrockModel(Model):
                                     "toolSpec": {
                                         "name": tool_spec["name"],
                                         "description": tool_spec["description"],
-                                        "inputSchema": tool_spec["inputSchema"],
+                                        "inputSchema": (
+                                            {"json": ensure_strict_json_schema(tool_spec["inputSchema"]["json"])}
+                                            if tool_spec.get("strict")
+                                            else tool_spec["inputSchema"]
+                                        ),
                                         **({"strict": tool_spec["strict"]} if "strict" in tool_spec else {}),
                                     }
                                 }

@@ -497,13 +497,19 @@ def test_format_request_tool_specs_with_strict(model, messages, model_id):
     strict_tool_spec = {
         "description": "description",
         "name": "name",
-        "inputSchema": {"key": "val"},
+        "inputSchema": {
+            "json": {
+                "type": "object",
+                "properties": {"x": {"type": "string"}},
+            }
+        },
         "strict": True,
     }
     tru_request = model._format_request(messages, tool_specs=[strict_tool_spec])
     tool_in_request = tru_request["toolConfig"]["tools"][0]["toolSpec"]
 
     assert tool_in_request["strict"] is True
+    assert tool_in_request["inputSchema"]["json"]["additionalProperties"] is False
 
 
 def test_format_request_tool_specs_with_strict_false(model, messages, model_id):
