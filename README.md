@@ -20,6 +20,7 @@
     <a href="https://github.com/strands-agents/sdk-python/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/github/license/strands-agents/sdk-python"/></a>
     <a href="https://pypi.org/project/strands-agents/"><img alt="PyPI version" src="https://img.shields.io/pypi/v/strands-agents"/></a>
     <a href="https://python.org"><img alt="Python versions" src="https://img.shields.io/pypi/pyversions/strands-agents"/></a>
+    <a href="https://discord.gg/strands"><img alt="Strands Discord" src="https://img.shields.io/badge/Discord-Strands-5865F2?logo=discord&logoColor=white"/></a>
   </div>
   
   <p>
@@ -307,6 +308,19 @@ For detailed guidance & examples, explore our documentation:
 - [API Reference](https://strandsagents.com/docs/api/python/strands.agent.agent/)
 - [Production & Deployment Guide](https://strandsagents.com/docs/user-guide/deploy/operating-agents-in-production/)
 
+## Development
+
+Source code lives in the `strands-py/` subdirectory. To develop locally:
+
+```bash
+cd strands-py
+pip install hatch
+hatch test        # run unit tests
+hatch fmt         # format & lint
+```
+
+Git operations (commits, branches, PRs) are still done from the repo root as normal.
+
 ## Contributing ❤️
 
 We welcome contributions! See our [Contributing Guide](CONTRIBUTING.md) for details on:
@@ -315,6 +329,9 @@ We welcome contributions! See our [Contributing Guide](CONTRIBUTING.md) for deta
 - Contributing via Pull Requests
 - Code of Conduct
 - Reporting of security issues
+
+## Stay in touch with the team
+Come meet the Strands team and other users on [**Discord**](https://discord.com/invite/strands)
 
 ## License
 
