@@ -1,12 +1,12 @@
 version: 2
 updates:
   - package-ecosystem: "pip"
-    directory: "/"
+    directory: "/strands-py"
     schedule:
       interval: "daily"
     open-pull-requests-limit: 100
     commit-message:
-      prefix: ci
+      prefix: "ci(python)"
     groups:
       dev-dependencies:
         patterns:

@@ -52,6 +52,12 @@ When proposing solutions or reviewing code, we reference these principles to gui
 
 This project uses [hatchling](https://hatch.pypa.io/latest/build/#hatchling) as the build backend and [hatch](https://hatch.pypa.io/latest/) for development workflow management.
 
+All `hatch` commands should be run from the `strands-py/` subdirectory (where `pyproject.toml` lives):
+
+```bash
+cd strands-py
+```
+
 ### Setting Up Your Development Environment
 
 1. Entering virtual environment using `hatch` (recommended), then launch your IDE in the new shell.
@@ -112,7 +118,7 @@ We use the following tools to ensure code quality:
 1. **ruff** - For formatting and linting
 2. **mypy** - For static type checking
 
-These tools are configured in the [pyproject.toml](./pyproject.toml) file. Please ensure your code passes all linting and type checks before submitting a pull request:
+These tools are configured in the [pyproject.toml](./strands-py/pyproject.toml) file. Please ensure your code passes all linting and type checks before submitting a pull request:
 
 ```bash
 # Run all checks
@@ -122,7 +128,7 @@ hatch fmt --linter
 
 If you're using an IDE like VS Code or PyCharm, consider configuring it to use these tools automatically.
 
-For additional details on styling, please see our dedicated [Style Guide](./docs/STYLE_GUIDE.md).
+For additional details on styling, please see our dedicated [Style Guide](./strands-py/docs/STYLE_GUIDE.md).
 
 
 ## Contributing via Pull Requests
@@ -132,7 +138,7 @@ Contributions via pull requests are much appreciated. Before sending us a pull r
 2. You check existing open, and recently merged, pull requests to make sure someone else hasn't addressed the problem already.
 3. You open an issue to discuss any significant work - we would hate for your time to be wasted.
 
-For guidance on writing effective PR descriptions, see our [PR Description Guidelines](./docs/PR.md).
+For guidance on writing effective PR descriptions, see our [PR Description Guidelines](./strands-py/docs/PR.md).
 
 To send us a pull request, please:
 
