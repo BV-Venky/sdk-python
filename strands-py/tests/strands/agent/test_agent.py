@@ -242,18 +242,21 @@ class IdempotencyTestAgent(Agent):
 
     Pairs with SyncEventMockedModel to provide deterministic two-thread synchronization:
     the model pauses Thread 1 inside stream(), and this class signals when Thread 2
-    has reached _check_idempotency and been identified as a duplicate.
+    has reached the concurrency controller and been identified as a duplicate.
     """
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.duplicate_detected = threading.Event()
+        original_begin = self._concurrency.begin
 
-    def _check_idempotency(self, idempotency_token):
-        result = super()._check_idempotency(idempotency_token)
-        if result[0] is not None:
-            self.duplicate_detected.set()
-        return result
+        def begin_with_signal(token):
+            result = original_begin(token)
+            if result.waiting_on is not None:
+                self.duplicate_detected.set()
+            return result
+
+        self._concurrency.begin = begin_with_signal
 
 
 def test_agent__init__tool_loader_format(tool_decorated, tool_module, tool_imported, tool_registry):
@@ -2458,7 +2461,7 @@ def test_agent_concurrent_invocation_mode_default_is_throw():
     agent = Agent(model=model)
 
     # Verify the default mode
-    assert agent._concurrent_invocation_mode == "throw"
+    assert agent.concurrent_invocation_mode == "throw"
 
 
 def test_agent_concurrent_invocation_mode_stores_value():
@@ -2466,10 +2469,10 @@ def test_agent_concurrent_invocation_mode_stores_value():
     model = MockedModelProvider([{"role": "assistant", "content": [{"text": "hello"}]}])
 
     agent_throw = Agent(model=model, concurrent_invocation_mode="throw")
-    assert agent_throw._concurrent_invocation_mode == "throw"
+    assert agent_throw.concurrent_invocation_mode == "throw"
 
     agent_reentrant = Agent(model=model, concurrent_invocation_mode="unsafe_reentrant")
-    assert agent_reentrant._concurrent_invocation_mode == "unsafe_reentrant"
+    assert agent_reentrant.concurrent_invocation_mode == "unsafe_reentrant"
 
 
 def test_agent_concurrent_invocation_mode_accepts_enum():
@@ -2479,12 +2482,12 @@ def test_agent_concurrent_invocation_mode_accepts_enum():
 
     # Using enum values
     agent_throw = Agent(model=model, concurrent_invocation_mode=ConcurrentInvocationMode.THROW)
-    assert agent_throw._concurrent_invocation_mode == "throw"
-    assert agent_throw._concurrent_invocation_mode == ConcurrentInvocationMode.THROW
+    assert agent_throw.concurrent_invocation_mode == "throw"
+    assert agent_throw.concurrent_invocation_mode == ConcurrentInvocationMode.THROW
 
     agent_reentrant = Agent(model=model, concurrent_invocation_mode=ConcurrentInvocationMode.UNSAFE_REENTRANT)
-    assert agent_reentrant._concurrent_invocation_mode == "unsafe_reentrant"
-    assert agent_reentrant._concurrent_invocation_mode == ConcurrentInvocationMode.UNSAFE_REENTRANT
+    assert agent_reentrant.concurrent_invocation_mode == "unsafe_reentrant"
+    assert agent_reentrant.concurrent_invocation_mode == ConcurrentInvocationMode.UNSAFE_REENTRANT
 
 
 @pytest.mark.asyncio

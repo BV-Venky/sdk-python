@@ -15,7 +15,6 @@ import logging
 import threading
 import warnings
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping
-from dataclasses import dataclass, field
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -70,10 +69,11 @@ from ..tools.watcher import ToolWatcher
 from ..types._events import AgentResultEvent, EventLoopStopEvent, InitEventLoopEvent, ModelStreamChunkEvent, TypedEvent
 from ..types.agent import AgentInput, ConcurrentInvocationMode
 from ..types.content import ContentBlock, Message, Messages, SystemContentBlock
-from ..types.exceptions import ConcurrencyException, ContextWindowOverflowException, IdempotencyAbortedError
+from ..types.exceptions import ConcurrencyException, ContextWindowOverflowException
 from ..types.tools import AgentTool
 from ..types.traces import AttributeValue
 from ._agent_as_tool import _AgentAsTool
+from ._concurrency import _ConcurrencyController
 from .agent_result import AgentResult
 from .base import AgentBase
 from .conversation_manager import (
@@ -106,21 +106,6 @@ _DEFAULT_CALLBACK_HANDLER = _DefaultCallbackHandlerSentinel()
 _DEFAULT_RETRY_STRATEGY = _DefaultRetryStrategySentinel()
 _DEFAULT_AGENT_NAME = "Strands Agents"
 _DEFAULT_AGENT_ID = "default"
-
-
-@dataclass
-class _InflightInvocation:
-    """Tracks an inflight invocation for idempotency deduplication.
-
-    When a caller provides an `idempotency_token`, the agent registers this invocation
-    (in THROW mode only one can be inflight at a time). If a duplicate call arrives
-    with the same token while the original is still running, the duplicate waits on
-    the `done` event and receives the same result or error.
-    """
-
-    done: threading.Event = field(default_factory=threading.Event)
-    result: AgentResult | None = None
-    error: BaseException | None = None
 
 
 class Agent(AgentBase):
@@ -324,19 +309,7 @@ class Agent(AgentBase):
         # Runtime state for model providers (e.g., server-side response ids)
         self._model_state: dict[str, Any] = {}
 
-        # Initialize lock for guarding concurrent invocations
-        # Using threading.Lock instead of asyncio.Lock because run_async() creates
-        # separate event loops in different threads, so asyncio.Lock wouldn't work
-        self._invocation_lock = threading.Lock()
-        self._concurrent_invocation_mode = concurrent_invocation_mode
-
-        # Tracks the single inflight invocation for idempotency duplicate detection.
-        # In THROW mode only one invocation can be inflight at a time, so a single
-        # variable suffices. Uses threading primitives (not asyncio) because run_async()
-        # creates separate threads with separate event loops.
-        self._inflight_idempotency_token: Any = None
-        self._inflight_invocation: _InflightInvocation | None = None
-        self._inflight_invocations_lock = threading.Lock()
+        self._concurrency = _ConcurrencyController(concurrent_invocation_mode)
 
         # In the future, we'll have a RetryStrategy base class but until
         # that API is determined we only allow ModelRetryStrategy
@@ -489,6 +462,14 @@ class Agent(AgentBase):
         """
         all_tools = self.tool_registry.get_all_tools_config()
         return list(all_tools.keys())
+
+    @property
+    def concurrent_invocation_mode(self) -> ConcurrentInvocationMode:
+        """The concurrency posture this agent was configured with.
+
+        Mirrors the ``concurrent_invocation_mode`` constructor argument.
+        """
+        return self._concurrency.mode
 
     def __call__(
         self,
@@ -808,74 +789,6 @@ class Agent(AgentBase):
         if hasattr(self, "tool_registry"):
             self.tool_registry.cleanup()
 
-    def _check_idempotency(self, idempotency_token: Any) -> tuple[_InflightInvocation | None, Any]:
-        """Check if this invocation is a duplicate of an inflight one, or register it as new.
-
-        Only active in THROW mode. In UNSAFE_REENTRANT mode or when no token is provided,
-        this is a no-op that returns (None, None).
-
-        Args:
-            idempotency_token: Caller-provided token for duplicate detection.
-
-        Returns:
-            A tuple of (waiting_on, registered_token):
-                - If duplicate: (inflight_invocation_to_wait_on, None)
-                - If new request: (None, the_registered_token)
-                - If no token or wrong mode: (None, None)
-        """
-        if idempotency_token is None or self._concurrent_invocation_mode != ConcurrentInvocationMode.THROW:
-            return None, None
-
-        with self._inflight_invocations_lock:
-            if self._inflight_idempotency_token == idempotency_token:
-                return self._inflight_invocation, None
-            elif self._inflight_idempotency_token is not None:
-                # A different token is already inflight; don't overwrite it.
-                # Fall through to the _invocation_lock check which will raise ConcurrencyException.
-                return None, None
-            else:
-                self._inflight_invocation = _InflightInvocation()
-                self._inflight_idempotency_token = idempotency_token
-                return None, idempotency_token
-
-    def _complete_idempotent_invocation(
-        self,
-        registered_token: Any,
-        result: AgentResult | None = None,
-        error: BaseException | None = None,
-    ) -> None:
-        """Signal waiting duplicates and clean up idempotency state.
-
-        Safe to call even when registered_token is None (no-op in that case).
-        If both result and error are None (e.g. primary lost a lock race or was cancelled),
-        sets IdempotencyAbortedError so duplicates receive a clear error.
-
-        Args:
-            registered_token: The token that was registered by _check_idempotency, or None.
-            result: The AgentResult to pass to waiting duplicates (success path).
-            error: The exception to pass to waiting duplicates (error path).
-        """
-        if registered_token is None:
-            return
-
-        with self._inflight_invocations_lock:
-            if self._inflight_idempotency_token != registered_token:
-                return  # Another invocation owns the slot; don't touch it.
-            inflight = self._inflight_invocation
-            self._inflight_idempotency_token = None
-            self._inflight_invocation = None
-
-        if inflight is None:
-            return
-
-        if error is not None:
-            inflight.error = error
-        elif result is not None:
-            inflight.result = result
-        else:
-            inflight.error = IdempotencyAbortedError("Primary invocation was aborted before producing a result.")
-        inflight.done.set()
-
     async def stream_async(
         self,
         prompt: AgentInput = None,
@@ -930,28 +843,23 @@ class Agent(AgentBase):
                     yield event["data"]
             ```
         """
-        waiting_on, registered_token = self._check_idempotency(idempotency_token)
+        begin = self._concurrency.begin(idempotency_token)
 
-        if waiting_on is not None:
+        if begin.waiting_on is not None:
             logger.debug("idempotency_token=<%s> | duplicate request detected, waiting for original", idempotency_token)
-            await asyncio.to_thread(waiting_on.done.wait)
-            if waiting_on.error is not None:
-                raise waiting_on.error
-            if waiting_on.result is not None:
-                yield AgentResultEvent(result=waiting_on.result).as_dict()
+            await asyncio.to_thread(begin.waiting_on.done.wait)
+            if begin.waiting_on.error is not None:
+                raise begin.waiting_on.error
+            if begin.waiting_on.result is not None:
+                yield AgentResultEvent(result=begin.waiting_on.result).as_dict()
             return
 
-        # Conditionally acquire lock based on concurrent_invocation_mode
-        # Using threading.Lock instead of asyncio.Lock because run_async() creates
-        # separate event loops in different threads
-        if self._concurrent_invocation_mode == ConcurrentInvocationMode.THROW:
-            lock_acquired = self._invocation_lock.acquire(blocking=False)
-            if not lock_acquired:
-                exc = ConcurrencyException(
-                    "Agent is already processing a request. Concurrent invocations are not supported."
-                )
-                self._complete_idempotent_invocation(registered_token, error=exc)
-                raise exc
+        if not begin.lock_acquired:
+            exc = ConcurrencyException(
+                "Agent is already processing a request. Concurrent invocations are not supported."
+            )
+            self._concurrency.complete(begin.registered_token, error=exc)
+            raise exc
 
         result: AgentResult | None = None
 
@@ -999,17 +907,15 @@ class Agent(AgentBase):
 
                 except Exception as e:
                     self._end_agent_trace_span(error=e)
-                    self._complete_idempotent_invocation(registered_token, error=e)
+                    self._concurrency.complete(begin.registered_token, error=e)
                     raise
 
         finally:
             # Clear cancel signal to allow agent reuse after cancellation
             self._cancel_signal.clear()
 
-            self._complete_idempotent_invocation(registered_token, result=result)
-
-            if self._invocation_lock.locked():
-                self._invocation_lock.release()
+            self._concurrency.complete(begin.registered_token, result=result)
+            self._concurrency.release_lock()
 
     async def _run_loop(
         self,
