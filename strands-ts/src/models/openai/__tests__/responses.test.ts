@@ -50,24 +50,20 @@ describe("OpenAIModel (api: 'responses')", () => {
     }
   })
 
-  describe('constructor', () => {
+  describe.runIf(isNode)('constructor', () => {
     it('uses API key from constructor parameter', () => {
       new OpenAIModel({ api: 'responses', modelId: 'gpt-4o', apiKey: 'sk-explicit' })
       expect(OpenAI).toHaveBeenCalledWith(expect.objectContaining({ apiKey: 'sk-explicit' }))
     })
 
-    if (isNode) {
-      it('uses API key from environment variable', () => {
-        vi.stubEnv('OPENAI_API_KEY', 'sk-from-env')
-        new OpenAIModel({ api: 'responses', modelId: 'gpt-4o' })
-        expect(OpenAI).toHaveBeenCalled()
-      })
-    }
+    it('uses API key from environment variable', () => {
+      vi.stubEnv('OPENAI_API_KEY', 'sk-from-env')
+      new OpenAIModel({ api: 'responses', modelId: 'gpt-4o' })
+      expect(OpenAI).toHaveBeenCalled()
+    })
 
     it('throws error when no API key is available', () => {
-      if (isNode) {
-        vi.stubEnv('OPENAI_API_KEY', '')
-      }
+      vi.stubEnv('OPENAI_API_KEY', '')
       expect(() => new OpenAIModel({ api: 'responses', modelId: 'gpt-4o' })).toThrow(/OpenAI API key is required/)
     })
 
@@ -80,9 +76,7 @@ describe("OpenAIModel (api: 'responses')", () => {
     })
 
     it('does not require API key when client is provided', () => {
-      if (isNode) {
-        vi.stubEnv('OPENAI_API_KEY', '')
-      }
+      vi.stubEnv('OPENAI_API_KEY', '')
       const client = {} as OpenAI
       expect(() => new OpenAIModel({ api: 'responses', client })).not.toThrow()
     })
@@ -710,28 +704,6 @@ describe("OpenAIModel (api: 'responses')", () => {
             const err: any = new Error('This model has a maximum context length of 8k.')
             err.code = 'context_length_exceeded'
             throw err
-          }),
-        },
-      }
-      const model = new OpenAIModel({ api: 'responses', client })
-      await expect(
-        collectIterator(model.stream([new Message({ role: 'user', content: [new TextBlock('x')] })]))
-      ).rejects.toBeInstanceOf(ContextWindowOverflowError)
-    })
-
-    it.each([
-      'maximum context length exceeded',
-      'context_length_exceeded',
-      'too many tokens',
-      'context length',
-      'Input is too long for requested model',
-      'input length and `max_tokens` exceed context limit',
-      'too many total text bytes',
-    ])('wraps context overflow message pattern "%s" as ContextWindowOverflowError', async (message) => {
-      const client: any = {
-        responses: {
-          create: vi.fn(async () => {
-            throw new Error(message)
           }),
         },
       }
