@@ -27,7 +27,7 @@ class _InflightInvocation:
     """
 
     done: threading.Event = field(default_factory=threading.Event)
-    result: "AgentResult | None" = None
+    result: AgentResult | None = None
     error: BaseException | None = None
 
 
@@ -97,7 +97,7 @@ class _ConcurrencyController:
         self,
         registered_token: Any,
         *,
-        result: "AgentResult | None" = None,
+        result: AgentResult | None = None,
         error: BaseException | None = None,
     ) -> None:
         """Signal waiting duplicates and clear the inflight slot.
