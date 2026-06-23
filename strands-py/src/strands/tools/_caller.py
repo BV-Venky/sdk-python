@@ -94,9 +94,7 @@ class _ToolCaller:
             from ..agent import Agent  # Locally imported to avoid circular reference
 
             acquired_lock = (
-                should_lock
-                and isinstance(self._agent, Agent)
-                and self._agent._concurrency.try_acquire_lock()
+                should_lock and isinstance(self._agent, Agent) and self._agent._concurrency.try_acquire_lock()
             )
             if should_lock and not acquired_lock:
                 raise ConcurrencyException(

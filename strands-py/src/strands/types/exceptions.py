@@ -131,6 +131,8 @@ class IdempotencyAbortedError(Exception):
     is aborted before producing a result (e.g. it lost a lock race or was cancelled),
     this exception is raised to all waiting duplicates.
     """
+
+
 class CheckpointException(Exception):
     """Exception raised when checkpoint operations fail (e.g., incompatible schema version)."""
 

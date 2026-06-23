@@ -515,11 +515,11 @@ class Agent(AgentBase):
             invocation_state: Additional parameters to pass through the event loop.
             structured_output_model: Pydantic model type(s) for structured output (overrides agent default).
             structured_output_prompt: Custom prompt for forcing structured output (overrides agent default).
-            idempotency_token: Optional token for duplicate request detection. If provided in THROW mode
-                and another invocation with the same token is already inflight, the caller waits for the
-                original to complete and receives the same result. Duplicate callers receive only the
-                final AgentResult; intermediate streaming events are not replayed. Can be any hashable
-                object (string, UUID, or even the prompt itself). Ignored in UNSAFE_REENTRANT mode.
+            idempotency_token: Dedup token for THROW mode (ignored in UNSAFE_REENTRANT). If a matching
+                token is already inflight, this call blocks until the original finishes, then gets its
+                final result — only the result, not the streamed events, though ``callback_handler``
+                still fires once with it. Matched by ``==`` (any equatable object; need not be hashable).
+                Raises ``IdempotencyAbortedError`` if the original is aborted before producing a result.
             limits: Per-invocation budget caps (turns / output_tokens / total_tokens).
                 See :class:`~strands.types.agent.Limits`. When a cap is reached, the loop
                 terminates gracefully at the next turn boundary with a corresponding
@@ -536,6 +536,13 @@ class Agent(AgentBase):
                 - metrics: Performance metrics from the event loop
                 - state: The final state of the event loop
                 - structured_output: Parsed structured output when structured_output_model was specified
+
+        Raises:
+            ConcurrencyException: If another invocation is already in progress on this agent instance.
+            IdempotencyAbortedError: If this call is a duplicate of an inflight ``idempotency_token``
+                whose primary invocation was aborted before producing a result.
+            TypeError: If a value in ``limits`` is not a positive integer.
+            Exception: Any exceptions from the agent invocation will be propagated to the caller.
         """
         return run_async(
             lambda: self.invoke_async(
@@ -577,11 +584,11 @@ class Agent(AgentBase):
             invocation_state: Additional parameters to pass through the event loop.
             structured_output_model: Pydantic model type(s) for structured output (overrides agent default).
             structured_output_prompt: Custom prompt for forcing structured output (overrides agent default).
-            idempotency_token: Optional token for duplicate request detection. If provided in THROW mode
-                and another invocation with the same token is already inflight, the caller waits for the
-                original to complete and receives the same result. Duplicate callers receive only the
-                final AgentResult; intermediate streaming events are not replayed. Can be any hashable
-                object (string, UUID, or even the prompt itself). Ignored in UNSAFE_REENTRANT mode.
+            idempotency_token: Dedup token for THROW mode (ignored in UNSAFE_REENTRANT). If a matching
+                token is already inflight, this call blocks until the original finishes, then gets its
+                final result — only the result, not the streamed events, though ``callback_handler``
+                still fires once with it. Matched by ``==`` (any equatable object; need not be hashable).
+                Raises ``IdempotencyAbortedError`` if the original is aborted before producing a result.
             limits: Per-invocation budget caps (turns / output_tokens / total_tokens).
                 See :class:`~strands.types.agent.Limits`. When a cap is reached, the loop
                 terminates gracefully at the next turn boundary with a corresponding
@@ -597,6 +604,13 @@ class Agent(AgentBase):
                 - message: The final message from the model
                 - metrics: Performance metrics from the event loop
                 - state: The final state of the event loop
+
+        Raises:
+            ConcurrencyException: If another invocation is already in progress on this agent instance.
+            IdempotencyAbortedError: If this call is a duplicate of an inflight ``idempotency_token``
+                whose primary invocation was aborted before producing a result.
+            TypeError: If a value in ``limits`` is not a positive integer.
+            Exception: Any exceptions from the agent invocation will be propagated to the caller.
         """
         events = self.stream_async(
             prompt,
@@ -855,11 +869,11 @@ class Agent(AgentBase):
             invocation_state: Additional parameters to pass through the event loop.
             structured_output_model: Pydantic model type(s) for structured output (overrides agent default).
             structured_output_prompt: Custom prompt for forcing structured output (overrides agent default).
-            idempotency_token: Optional token for duplicate request detection. If provided in THROW mode
-                and another invocation with the same token is already inflight, the caller waits for the
-                original to complete and receives the same result. Duplicate callers receive only the
-                final AgentResult; intermediate streaming events are not replayed. Can be any hashable
-                object (string, UUID, or even the prompt itself). Ignored in UNSAFE_REENTRANT mode.
+            idempotency_token: Dedup token for THROW mode (ignored in UNSAFE_REENTRANT). If a matching
+                token is already inflight, this call blocks until the original finishes, then gets its
+                final result — only the result, not the streamed events, though ``callback_handler``
+                still fires once with it. Matched by ``==`` (any equatable object; need not be hashable).
+                Raises ``IdempotencyAbortedError`` if the original is aborted before producing a result.
             limits: Per-invocation budget caps (turns / output_tokens / total_tokens).
                 See :class:`~strands.types.agent.Limits`. When a cap is reached, the loop
                 terminates gracefully at the next turn boundary with a corresponding
@@ -879,6 +893,8 @@ class Agent(AgentBase):
 
         Raises:
             ConcurrencyException: If another invocation is already in progress on this agent instance.
+            IdempotencyAbortedError: If this call is a duplicate of an inflight ``idempotency_token``
+                whose primary invocation was aborted before producing a result.
             TypeError: If a value in ``limits`` is not a positive integer.
             Exception: Any exceptions from the agent invocation will be propagated to the caller.
 
@@ -899,7 +915,14 @@ class Agent(AgentBase):
             if begin.waiting_on.error is not None:
                 raise begin.waiting_on.error
             if begin.waiting_on.result is not None:
-                yield AgentResultEvent(result=begin.waiting_on.result).as_dict()
+                dup_result = begin.waiting_on.result
+                # Mirror the primary path: drive this caller's callback_handler with the
+                # deduplicated result before yielding, so callback consumers don't miss it.
+                dup_callback_handler = self.callback_handler
+                if kwargs:
+                    dup_callback_handler = kwargs.get("callback_handler", self.callback_handler)
+                dup_callback_handler(result=dup_result)
+                yield AgentResultEvent(result=dup_result).as_dict()
             return
 
         if not begin.lock_acquired:

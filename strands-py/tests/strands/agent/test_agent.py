@@ -2887,6 +2887,52 @@ def test_idempotency_duplicate_waits_and_returns_same_result():
     assert str(results[0]) == str(results[1])
 
 
+def test_idempotency_duplicate_invokes_callback_handler_with_result():
+    """Test that the duplicate path drives callback_handler(result=...) like the primary path."""
+    model = SyncEventMockedModel(
+        [
+            {"role": "assistant", "content": [{"text": "hello"}]},
+        ]
+    )
+
+    result_callbacks = []
+    cb_lock = threading.Lock()
+
+    def callback_handler(**kwargs):
+        if "result" in kwargs:
+            with cb_lock:
+                result_callbacks.append(kwargs["result"])
+
+    agent = IdempotencyTestAgent(model=model, concurrent_invocation_mode="throw", callback_handler=callback_handler)
+
+    errors = []
+    lock = threading.Lock()
+
+    def invoke():
+        try:
+            agent("test", idempotency_token="abc-123")
+        except Exception as e:
+            with lock:
+                errors.append(e)
+
+    t1 = threading.Thread(target=invoke)
+    t1.start()
+    model.started_event.wait()
+
+    t2 = threading.Thread(target=invoke)
+    t2.start()
+    agent.duplicate_detected.wait()
+
+    model.proceed_event.set()
+    t1.join()
+    t2.join()
+
+    assert len(errors) == 0, f"Expected 0 errors, got {len(errors)}: {errors}"
+    # Both the primary and the deduplicated duplicate must each fire a result callback.
+    assert len(result_callbacks) == 2, f"Expected 2 result callbacks, got {len(result_callbacks)}"
+    assert str(result_callbacks[0]) == str(result_callbacks[1])
+
+
 def test_idempotency_original_fails_duplicate_gets_same_error():
     """Test that when the original invocation fails, the duplicate receives the same exception."""
     model = SyncEventFailingModel()
@@ -3248,6 +3294,8 @@ def test_idempotency_cleanup_after_failure():
     agent.model = success_model
     result = agent("test", idempotency_token="abc")
     assert str(result).strip() == "recovered"
+
+
 # ============================================================================
 # Checkpointing Tests
 # ============================================================================
