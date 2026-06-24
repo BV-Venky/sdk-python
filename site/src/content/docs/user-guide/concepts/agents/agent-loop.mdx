@@ -269,7 +269,7 @@ Sometimes more than one request targets the same agent instance at once: a retri
 
   For most applications this is the behavior you want. One agent instance maps to one conversation, and letting invocations overlap would interleave their messages and corrupt the history.
 
-  ### Deduplicating retried requests
+  #### Deduplicating retried requests
 
   When a retry arrives for a request that is still running, returning the original's result beats both erroring and starting the work twice. Pass an idempotency token that identifies the logical request, for example `agent("Process order 1234", idempotency_token="order-1234")`.
 
@@ -294,7 +294,7 @@ Sometimes more than one request targets the same agent instance at once: a retri
 
   The idempotency token works the same way on `invoke_async` and `stream_async`.
 
-  ### Allowing concurrent invocations
+  #### Allowing concurrent invocations
 
   To run multiple invocations on one agent at the same time, set the concurrency mode when you construct it:
 
@@ -309,7 +309,7 @@ Sometimes more than one request targets the same agent instance at once: a retri
   </Tab>
   <Tab label="TypeScript">
 
-  The TypeScript SDK also rejects overlapping invocations: invoking an agent that is already running throws `ConcurrentInvocationError`. The configurable concurrency mode and idempotency-token deduplication described here are available only in the Python SDK.
+  The TypeScript SDK also rejects overlapping invocations: invoking an agent that is already running throws `ConcurrentInvocationError`. It does not offer a configurable concurrency mode or idempotency-token deduplication of retries; both are available only in the Python SDK.
   </Tab>
 </Tabs>
 
