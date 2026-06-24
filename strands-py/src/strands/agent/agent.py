@@ -1131,9 +1131,7 @@ class Agent(AgentBase):
 
         if begin.waiting_on is not None:
             logger.debug("idempotency_token=<%s> | duplicate request detected, waiting for original", idempotency_token)
-            wait_future = begin.waiting_on.register_waiter()
-            if wait_future is not None:
-                await wait_future
+            await begin.waiting_on.register_waiter()
             if begin.waiting_on.error is not None:
                 raise begin.waiting_on.error
             if begin.waiting_on.result is not None:

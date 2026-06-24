@@ -9,6 +9,7 @@ in ``agent.py`` and the synchronization primitives + bookkeeping here.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -20,67 +21,50 @@ if TYPE_CHECKING:
     from .agent_result import AgentResult
 
 
-def _resolve_future(future: asyncio.Future) -> None:
-    """Resolve a waiter future on its own loop. No-op if already done or cancelled."""
-    if not future.done():
-        future.set_result(None)
-
-
 @dataclass
 class _InflightInvocation:
     """Tracks an inflight invocation for idempotency deduplication.
 
-    Duplicate callers register an ``asyncio.Future`` via ``register_waiter`` and await
-    it, then read ``result`` or ``error``. The primary calls ``settle`` on completion,
-    which resolves every waiter's future on its own event loop via
-    ``call_soon_threadsafe``. No waiter ever blocks a thread-pool worker, so a storm of
-    duplicates cannot starve the executor the primary needs to make progress.
+    Duplicate callers register via ``register_waiter`` and await the returned awaitable,
+    then read ``result`` or ``error``. The primary calls ``settle`` on completion.
+
+    A single thread-safe ``concurrent.futures.Future`` is the broadcast signal; each
+    waiter turns it into a loop-local awaitable via ``asyncio.wrap_future``, which hooks
+    a done-callback that bridges back to the waiter's loop with ``call_soon_threadsafe``.
+    No waiter ever blocks a thread-pool worker, so a storm of duplicates cannot starve
+    the executor the primary needs to make progress. The wrapped future is ``shield``ed
+    so that cancelling one waiting duplicate cannot cancel the shared signal and strand
+    the others.
     """
 
     result: AgentResult | None = None
     error: BaseException | None = None
-    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
-    _settled: bool = False
-    _waiters: list[tuple[asyncio.AbstractEventLoop, asyncio.Future]] = field(default_factory=list, repr=False)
+    _done: concurrent.futures.Future = field(default_factory=concurrent.futures.Future, repr=False)
 
     @property
     def settled(self) -> bool:
         """Whether the primary has produced a result or error yet."""
-        with self._lock:
-            return self._settled
+        return self._done.done()
 
-    def register_waiter(self) -> asyncio.Future | None:
-        """Register the calling coroutine's loop to be notified on completion.
+    def register_waiter(self) -> asyncio.Future:
+        """Return a loop-local awaitable that resolves when the primary settles.
 
-        Returns:
-            A future to await, or None if the primary has already settled (the caller
-            then reads ``result``/``error`` directly). Returning None closes the race
-            where the primary settles between duplicate detection and registration.
+        Resolves immediately if the primary has already settled (the caller then reads
+        ``result``/``error``), so there is no register-after-settle race to handle.
         """
-        loop = asyncio.get_running_loop()
-        future = loop.create_future()
-        with self._lock:
-            if self._settled:
-                return None
-            self._waiters.append((loop, future))
-        return future
+        return asyncio.shield(asyncio.wrap_future(self._done))
 
     def settle(self, result: AgentResult | None, error: BaseException | None) -> None:
         """Record the outcome and wake every registered waiter. Idempotent."""
-        with self._lock:
-            if self._settled:
-                return
-            self.result = result
-            self.error = error
-            self._settled = True
-            waiters = self._waiters
-            self._waiters = []
-        for loop, future in waiters:
-            try:
-                loop.call_soon_threadsafe(_resolve_future, future)
-            except RuntimeError:
-                # Waiter's loop was already closed/torn down; nothing to wake.
-                pass
+        if self._done.done():
+            return
+        # Publish result/error before signalling so woken waiters observe them.
+        self.result = result
+        self.error = error
+        try:
+            self._done.set_result(None)
+        except concurrent.futures.InvalidStateError:
+            pass
 
 
 @dataclass

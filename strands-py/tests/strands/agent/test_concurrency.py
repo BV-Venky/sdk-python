@@ -263,7 +263,6 @@ async def test_register_waiter_resolves_when_primary_settles_from_another_thread
     dup = controller.begin("abc")
 
     wait_future = dup.waiting_on.register_waiter()
-    assert wait_future is not None
     assert not wait_future.done()
 
     mock_result = MagicMock()
@@ -274,25 +273,29 @@ async def test_register_waiter_resolves_when_primary_settles_from_another_thread
 
 
 @pytest.mark.asyncio
-async def test_register_waiter_returns_none_when_already_settled(controller):
-    """If the primary settles before the waiter registers, register_waiter returns None."""
+async def test_register_waiter_resolves_immediately_when_already_settled(controller):
+    """If the primary settles before the waiter registers, the awaitable resolves at once."""
     first = controller.begin("abc")
     dup = controller.begin("abc")
     controller.complete(first.registered_token, result=MagicMock())
 
     assert dup.waiting_on.settled is True
-    assert dup.waiting_on.register_waiter() is None
+    await asyncio.wait_for(dup.waiting_on.register_waiter(), timeout=5)
 
 
 @pytest.mark.asyncio
-async def test_register_waiter_cancellation_is_safe(controller):
-    """Cancelling a waiting coroutine must not break a later settle."""
+async def test_cancelling_one_waiter_does_not_strand_others(controller):
+    """Cancelling one waiting duplicate must not cancel the shared signal for the rest."""
     first = controller.begin("abc")
     dup = controller.begin("abc")
 
-    wait_future = dup.waiting_on.register_waiter()
-    wait_future.cancel()
+    cancelled = dup.waiting_on.register_waiter()
+    survivor = dup.waiting_on.register_waiter()
+    cancelled.cancel()
+    await asyncio.sleep(0)
 
-    # Settle must tolerate the already-cancelled waiter future without raising.
-    controller.complete(first.registered_token, result=MagicMock())
-    assert dup.waiting_on.settled is True
+    mock_result = MagicMock()
+    threading.Thread(target=lambda: controller.complete(first.registered_token, result=mock_result)).start()
+
+    await asyncio.wait_for(survivor, timeout=5)
+    assert dup.waiting_on.result is mock_result
