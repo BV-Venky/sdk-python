@@ -8,6 +8,7 @@ in ``agent.py`` and the synchronization primitives + bookkeeping here.
 
 from __future__ import annotations
 
+import asyncio
 import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -19,16 +20,67 @@ if TYPE_CHECKING:
     from .agent_result import AgentResult
 
 
+def _resolve_future(future: asyncio.Future) -> None:
+    """Resolve a waiter future on its own loop. No-op if already done or cancelled."""
+    if not future.done():
+        future.set_result(None)
+
+
 @dataclass
 class _InflightInvocation:
     """Tracks an inflight invocation for idempotency deduplication.
 
-    Duplicate callers wait on ``done`` and then read ``result`` or ``error``.
+    Duplicate callers register an ``asyncio.Future`` via ``register_waiter`` and await
+    it, then read ``result`` or ``error``. The primary calls ``settle`` on completion,
+    which resolves every waiter's future on its own event loop via
+    ``call_soon_threadsafe``. No waiter ever blocks a thread-pool worker, so a storm of
+    duplicates cannot starve the executor the primary needs to make progress.
     """
 
-    done: threading.Event = field(default_factory=threading.Event)
     result: AgentResult | None = None
     error: BaseException | None = None
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _settled: bool = False
+    _waiters: list[tuple[asyncio.AbstractEventLoop, asyncio.Future]] = field(default_factory=list, repr=False)
+
+    @property
+    def settled(self) -> bool:
+        """Whether the primary has produced a result or error yet."""
+        with self._lock:
+            return self._settled
+
+    def register_waiter(self) -> asyncio.Future | None:
+        """Register the calling coroutine's loop to be notified on completion.
+
+        Returns:
+            A future to await, or None if the primary has already settled (the caller
+            then reads ``result``/``error`` directly). Returning None closes the race
+            where the primary settles between duplicate detection and registration.
+        """
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        with self._lock:
+            if self._settled:
+                return None
+            self._waiters.append((loop, future))
+        return future
+
+    def settle(self, result: AgentResult | None, error: BaseException | None) -> None:
+        """Record the outcome and wake every registered waiter. Idempotent."""
+        with self._lock:
+            if self._settled:
+                return
+            self.result = result
+            self.error = error
+            self._settled = True
+            waiters = self._waiters
+            self._waiters = []
+        for loop, future in waiters:
+            try:
+                loop.call_soon_threadsafe(_resolve_future, future)
+            except RuntimeError:
+                # Waiter's loop was already closed/torn down; nothing to wake.
+                pass
 
 
 @dataclass
@@ -37,8 +89,8 @@ class _BeginResult:
 
     Exactly one of the following is the actionable signal for the caller:
 
-    - ``waiting_on`` is set: this call is a duplicate of an inflight token. Wait on
-      ``waiting_on.done`` and then yield the cached result or raise the cached error.
+    - ``waiting_on`` is set: this call is a duplicate of an inflight token. Await
+      ``waiting_on.register_waiter()`` and then yield the cached result or raise the cached error.
     - ``lock_acquired`` is False: a different invocation owns the lock. Raise
       ``ConcurrencyException``.
     - Otherwise: proceed with the invocation. Pass ``registered_token`` back to
@@ -54,8 +106,9 @@ class _ConcurrencyController:
     """Owns the invocation lock and the inflight idempotency-token registry.
 
     In THROW mode only one invocation can be inflight at a time, so a single
-    inflight slot suffices. Uses ``threading`` primitives (not asyncio) because
-    ``Agent.run_async()`` may spawn separate event loops on separate threads.
+    inflight slot suffices. The lock and registry use ``threading`` primitives
+    because ``Agent.run_async()`` may spawn separate event loops on separate threads;
+    waiter notification bridges back to each waiter's loop via ``call_soon_threadsafe``.
     """
 
     def __init__(self, mode: ConcurrentInvocationMode) -> None:
@@ -124,12 +177,11 @@ class _ConcurrencyController:
             return
 
         if error is not None:
-            inflight.error = error
+            inflight.settle(None, error)
         elif result is not None:
-            inflight.result = result
+            inflight.settle(result, None)
         else:
-            inflight.error = IdempotencyAbortedError("Primary invocation was aborted before producing a result.")
-        inflight.done.set()
+            inflight.settle(None, IdempotencyAbortedError("Primary invocation was aborted before producing a result."))
 
     def try_acquire_lock(self) -> bool:
         """Non-blockingly acquire the invocation lock.
