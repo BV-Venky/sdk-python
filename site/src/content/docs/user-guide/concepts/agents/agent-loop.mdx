@@ -309,7 +309,7 @@ Sometimes more than one request targets the same agent instance at once: a retri
   </Tab>
   <Tab label="TypeScript">
 
-  The TypeScript SDK also rejects overlapping invocations: invoking an agent that is already running throws `ConcurrentInvocationError`. It does not offer a configurable concurrency mode or idempotency-token deduplication of retries; both are available only in the Python SDK.
+  TypeScript rejects overlapping invocations: invoking an agent that is already running throws `ConcurrentInvocationError`. It does not offer a configurable concurrency mode or idempotency-token deduplication of retries; both are available only in the Python SDK.
   </Tab>
 </Tabs>
 
