@@ -55,16 +55,13 @@ class _InflightInvocation:
         return asyncio.shield(asyncio.wrap_future(self._done))
 
     def settle(self, result: AgentResult | None, error: BaseException | None) -> None:
-        """Record the outcome and wake every registered waiter. Idempotent."""
+        """Record the outcome and wake every registered waiter. Idempotent: first wins."""
         if self._done.done():
             return
         # Publish result/error before signalling so woken waiters observe them.
         self.result = result
         self.error = error
-        try:
-            self._done.set_result(None)
-        except concurrent.futures.InvalidStateError:
-            pass
+        self._done.set_result(None)
 
 
 @dataclass

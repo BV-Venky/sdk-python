@@ -106,6 +106,23 @@ def test_complete_with_neither_result_nor_error_sets_aborted(controller):
     assert isinstance(dup.waiting_on.error, IdempotencyAbortedError)
 
 
+def test_settle_is_idempotent_first_outcome_wins():
+    """settle() called twice keeps the first outcome and stays settled.
+
+    The controller serializes settle() via the inflight lock, so this guards the
+    idempotency contract directly at the _InflightInvocation level.
+    """
+    inflight = _InflightInvocation()
+    first_result = MagicMock()
+
+    inflight.settle(first_result, None)
+    inflight.settle(None, RuntimeError("second"))  # must be ignored
+
+    assert inflight.settled is True
+    assert inflight.result is first_result
+    assert inflight.error is None
+
+
 def test_complete_is_idempotent_on_double_call(controller):
     """except + finally both call complete(); second must no-op."""
     first = controller.begin("abc")
